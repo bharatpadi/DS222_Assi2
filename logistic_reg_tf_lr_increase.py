@@ -1,0 +1,121 @@
+import tensorflow as tf
+import numpy as np
+import random
+import datetime
+import time
+
+train_start = time.time()
+
+train_data = np.load('/home/bharatp/MLLD/Ass2/Ass1/DBPedia.full/train_mat.npy')
+train_labels = np.load('/home/bharatp/MLLD/Ass2/Ass1/DBPedia.full/train_lab_onehot_row_averaged.npy')
+
+val_data = np.load('/home/bharatp/MLLD/Ass2/Ass1/DBPedia.full/dev_mat.npy')
+val_labels = np.load('/home/bharatp/MLLD/Ass2/Ass1/DBPedia.full/dev_lab_onehot_row_averaged.npy')
+
+test_data = np.load('/home/bharatp/MLLD/Ass2/Ass1/DBPedia.full/test_mat.npy')
+test_labels = np.load('/home/bharatp/MLLD/Ass2/Ass1/DBPedia.full/test_lab_onehot_row_averaged.npy')
+
+X_train = train_data
+y_train = train_labels
+
+def get_accuracy(pred_labels, true_labels):
+    acc = 0.0
+    for i in range(len(pred_labels)):
+        if true_labels[i,pred_labels[i]] > 0:
+            acc += 1
+    return 1.0 * acc / len(pred_labels)
+
+def batch_iter(data, labels, batch_size, num_epochs):
+    data_size = len(data)
+    for e in range(num_epochs):
+        for b in range(data_size/batch_size):
+            l = random.sample(range(data_size), batch_size)
+            batch = data[l]
+            batch_labels = labels[l]
+            yield batch, batch_labels
+
+max_words = 10000
+beta = 0.01
+
+input_x = tf.placeholder(tf.float32, [None, max_words])
+input_y = tf.placeholder(tf.float32,[None, 50])
+
+w = tf.Variable(tf.truncated_normal([max_words, 50], stddev = 0.1))
+b = tf.Variable(tf.random_normal([50]))
+
+global_step = tf.Variable(0, name="global_step", trainable=False)
+starter_learning_rate = 0.01
+learning_rate = tf.train.exponential_decay(starter_learning_rate, global_step,
+                                           10000, 1.5, staircase=True)
+
+logits = tf.add(tf.matmul(input_x, w), b)
+predictions = tf.nn.softmax(logits)
+loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits = logits, labels = input_y) + beta*tf.nn.l2_loss(w) + beta*tf.nn.l2_loss(b))
+
+optimizer = tf.train.GradientDescentOptimizer(learning_rate)
+grads_and_vars = optimizer.compute_gradients(loss)
+train_op = optimizer.apply_gradients(grads_and_vars, global_step=global_step)
+saver = tf.train.Saver(tf.global_variables(), max_to_keep=5)
+pred_label = tf.argmax(predictions,1)
+correct_pred = tf.equal(tf.argmax(predictions, 1), tf.argmax(input_y, 1))
+accuracy = tf.reduce_mean(tf.cast(correct_pred,tf.float32))
+
+init = tf.global_variables_initializer()
+
+batch_size = 50
+no_epochs = 23
+data_size = len(X_train)
+t_loss = []
+
+train_start = time.time()
+
+with tf.Session() as sess:
+    sess.run(init)
+    max_val_acc  = 0.0
+    batches = batch_iter(X_train, y_train, batch_size, no_epochs)
+    i = 0
+    for batch in batches:
+        i += 1
+        _, step, train_loss, train_acc = sess.run([train_op, global_step, loss, accuracy], feed_dict={input_x: batch[0], input_y: batch[1]})
+        current_step = tf.train.global_step(sess, global_step)
+        time_str = datetime.datetime.now().isoformat()
+        if i % (data_size/(batch_size*8)) == 0:
+            print ("{}: step {}, mini batch loss {:g}, mini batch acc {:g}".format(time_str, step, train_loss, train_acc))
+        if i % (data_size/batch_size) == 0:
+            t_loss.append(train_loss) 
+            pred_labels = sess.run([pred_label], feed_dict={input_x: val_data, input_y: val_labels})
+            val_acc = get_accuracy(pred_labels[0], val_labels)
+            print ('Accuracy on val data:', val_acc)
+            if val_acc > max_val_acc:
+               max_val_acc = val_acc
+               saver.save(sess, '/home/bharatp/MLLD/Ass2/models/log_reg_const_lr_0.01_23epo_2inclr_' + str(val_acc))
+               best_model_path = '/home/bharatp/MLLD/Ass2/models/log_reg_const_lr_0.01_23epo_2inclr_' + str(val_acc)
+
+train_end = time.time()
+
+#best_model_path = '/home/bharatp/MLLD/Ass2/models/log_reg_const_lr_0.010.755630355952'
+print ('Testing starts.')
+print(best_model_path)
+init = tf.global_variables_initializer()
+saver = tf.train.Saver(tf.global_variables(), max_to_keep=5)
+pred_labels_train = []
+with tf.Session() as sess:
+    sess.run(init)
+    saver.restore(sess, best_model_path)
+    pred_labels = sess.run([pred_label], feed_dict={input_x: test_data, input_y: test_labels})
+    test_acc = get_accuracy(pred_labels[0], test_labels)
+    test_end = time.time()
+    for i in range(len(train_data)):
+        pred_labels = sess.run([pred_label], feed_dict={input_x: np.reshape(train_data[i],(1,10000)), input_y: np.reshape(train_labels[i], (1,50))})
+        pred_labels_train.append(pred_labels[0][0])
+
+    train_acc = get_accuracy(pred_labels_train, train_labels)
+
+print ('Train accuracy:', train_acc)
+print ('Test accuracy:',test_acc)
+np.save('training_loss_const_lr_0.01_23epochs_2inc_lr.npy',np.array(t_loss))
+
+print ('Train time:', train_end - train_start)
+print ('Testing time:', test_end - train_end)
+
+
